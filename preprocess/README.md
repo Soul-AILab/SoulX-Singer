@@ -20,9 +20,35 @@ The toolkit includes the following core modules:
   Supports customizable creation and editing of MIDI scores integrated with lyrics.
 
 
-## 📁 Data Preparation
+## 🔧 Python Environment
 
-To ensure the data processing pipeline runs correctly, please verify that all required checkpoints are correctly placed in `pretrained_models/SoulX-Singer-Preprocess`
+Before running the pipeline, set up the Python environment as follows:
+
+1. **Install Conda** (if not already installed): https://docs.conda.io/en/latest/miniconda.html
+
+2. **Activate or create a conda environment** (recommended Python 3.10):
+
+   - If you already have the `soulxsinger` environment:
+
+     ```bash
+     conda activate soulxsinger
+     ```
+
+   - Otherwise, create it first:
+
+     ```bash
+     conda create -n soulxsinger -y python=3.10
+     conda activate soulxsinger
+     ```
+
+3. **Install dependencies** from the `preprocess` directory:
+
+   ```bash
+   cd preprocess
+   pip install -r requirements.txt
+   ```
+
+## 📁 Data Preparation
 
 Before running the pipeline, prepare the following inputs:
 
@@ -60,6 +86,10 @@ The script will automatically execute the following steps:
 ---
 
 After the pipeline completes, you will obtain **SoulX-Singer–style metadata** that can be directly used for Singing Voice Synthesis (SVS).
+
+**Output paths:**
+- The final metadata (**JSON file**) is written **in the same directory as your input audio**, with the **same filename** (e.g. `audio.mp3` → `audio.json`)
+- All **intermediate results** (separated vocal and accompaniment, F0, VAD outputs, etc.) are also saved under the configured **`save_dir`**.
 
 ⚠️ **Important Note**
 
