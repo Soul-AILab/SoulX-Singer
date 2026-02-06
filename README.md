@@ -5,7 +5,7 @@
     <b><em>SoulX-Singer: Towards High-Quality Zero-Shot Singing Voice Synthesis</em></b>
   </p>
   <p>
-    <img src="assets/soulx-logo.png" alt="SoulX-Logo" style="width:200px; height:68px;">
+    <img src="assets/soulx-logo.png" alt="SoulX-Logo" style="height:80px;">
   </p>
   <p>
     <a href="https://soul-ailab.github.io/soulx-singer/"><img src="https://img.shields.io/badge/Demo-Page-lightgrey" alt="Demo Page"></a>
@@ -46,7 +46,7 @@ It supports **melody-conditioned (F0 contour)** and **score-conditioned (MIDI no
 
 <div align="center">
 
-<https://github.com/user-attachments/assets/13306f10-3a29-46ba-bcef-d6308d05cbcc">
+<https://github.com/user-attachments/assets/13306f10-3a29-46ba-bcef-d6308d05cbcc>
 
 </div>
 <div align="center">
