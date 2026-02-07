@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README_CN.md)
 
-一个功能完整的网页端歌声 MIDI 文件编辑器，类似 ACE-Studio 和 VOCALOID。支持实时拖拽调整 MIDI 音符、歌词编辑、音频波形对齐，以及导入导出含歌词的 MIDI 文件。
+一个功能完整的网页端歌声 MIDI 文件编辑器。支持实时拖拽调整 MIDI 音符、歌词编辑、音频波形对齐，以及导入导出含歌词的 MIDI 文件。
 
 ![MIDI Editor](https://img.shields.io/badge/React-19.2-blue) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue) ![Vite](https://img.shields.io/badge/Vite-7.2-purple)
 
@@ -15,6 +15,7 @@
   - 移动音符：拖拽音符块调整位置和音高
   - 调整音头：拖拽音符左边缘调整开始时间
   - 调整音尾：拖拽音符右边缘调整结束时间
+- **快捷音高调整**：Command/Ctrl + 上/下键微调选中音符的音高
 - **双击添加**：在钢琴卷帘空白处双击快速添加新音符
 - **钢琴键试听**：点击左侧钢琴键可试听对应音高
 
@@ -37,7 +38,7 @@
 
 - **波形显示**：导入音频后显示波形，与 MIDI 同步滚动
 - **格式支持**：MP3、WAV、OGG、FLAC、M4A、AAC
-- **同步播放**：音频与 MIDI 同步播放，可分别静音
+- **同步播放**：音频与 MIDI 同步播放，可分别调整音量大小
 - **点击定位**：点击波形或时间尺可快速定位播放位置
 
 ### ⚠️ 重叠检测
@@ -70,10 +71,6 @@
 ### 安装
 
 ```bash
-# 克隆项目
-git clone <repository-url>
-cd MIDI_Editor
-
 # 安装依赖
 npm install
 
@@ -127,6 +124,7 @@ npm run preview
 | ▶ / ⏸ | 播放 / 暂停 |
 | 2s ⏩ | 前进 2 秒 |
 | ⏭ | 跳到结尾 |
+| 选定区域 | 播放选定区域 |
 
 ## 🛠 技术栈
 
