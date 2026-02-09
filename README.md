@@ -59,6 +59,7 @@ It supports **melody-conditioned (F0 contour)** and **score-conditioned (MIDI no
 
 ## 📰 News
 
+- **[2026-02-08]** [MIDI Editor](https://huggingface.co/spaces/Soul-AILab/SoulX-Singer-Midi-Editor) is available on Hugging Face Spaces.
 - **[2026-02-06]** SoulX-Singer inference code and models released.
 
 ---
@@ -140,7 +141,8 @@ python webui.py
 
 ## 🚧 Roadmap
 
-- [ ] 🖥️ Web-based UI for easy and interactive inference  
+- [x] 🖥️ Web-based UI for easy and interactive inference  
+- [x] 🌐 Online MIDI Editor deployment on Hugging Face Spaces
 - [ ] 🌐 Online demo deployment on Hugging Face Spaces  
 - [ ] 📊 Release the SoulX-Singer-Eval benchmark  
 - [ ] 📚 Comprehensive tutorials and usage documentation  
