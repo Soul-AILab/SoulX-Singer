@@ -88,7 +88,7 @@ EXAMPLES_LIST = [
         str(ROOT / MUSIC_EXAMPLE_TARGET_META),
         "Mandarin",
         "Mandarin",
-        "score",
+        "melody",
         False,
         True,
         True,
@@ -213,7 +213,7 @@ class AppState:
             pass
         args = Args()
         args.device = self.device
-        args.model_path = "pretrained_models/soulx-singer/model.pt"
+        args.model_path = "pretrained_models/SoulX-Singer/model.pt"
         args.config = "soulxsinger/config/soulxsinger.yaml"
         args.prompt_wav_path = str(session_base / "audio" / "prompt.wav")
         prompt_meta_path = session_base / "transcriptions" / "prompt" / "metadata.json"
@@ -283,9 +283,10 @@ _i18n_key2lang_dict = dict(
     synthesis_btn_label=dict(en="Run singing synthesis", zh="歌声合成"),
     prompt_meta_label=dict(en="Prompt metadata", zh="Prompt metadata"),
     target_meta_label=dict(en="Target metadata", zh="Target metadata"),
+    
     edit_tutorial_html=dict(
-        en='<p class="mb-0">Refer to <a href="https://github.com/Soul-AILab/SoulX-Singer/tree/main/preprocess#step-2-edit-in-the-midi-editor" target="_blank" rel="noopener">Edit Tutorial</a> for metadata editing</p>',
-        zh='<p class="mb-0">metadata 编辑请参考 <a href="https://github.com/Soul-AILab/SoulX-Singer/tree/main/preprocess#step-2-edit-in-the-midi-editor" target="_blank" rel="noopener">编辑教程</a></p>',
+        en='<p class="mb-0">Refer to <a href="https://github.com/Soul-AILab/SoulX-Singer/tree/main/preprocess#step-2-edit-in-the-midi-editor" target="_blank" rel="noopener">Edit Tutorial</a> for metadata editing (Important Note: The generated metadata may not perfectly align the singing audio with the corresponding lyrics and musical notes. For better results, we strongly recommend manually correcting the alignment. You can directly use <a href="https://huggingface.co/spaces/Soul-AILab/SoulX-Singer-Midi-Editor" target="_blank" rel="noopener">SoulX-Singer-Midi-Editor</a> to edit) </p>',
+        zh='<p class="mb-0">metadata 编辑请参考 <a href="https://github.com/Soul-AILab/SoulX-Singer/tree/main/preprocess#step-2-edit-in-the-midi-editor" target="_blank" rel="noopener">编辑教程</a> (重要提示：自动生成的 metadata 在音频与歌词、音高对齐效果通常不理想。为了获得更好的结果，我们强烈建议手动纠正对齐，否则会导致合成效果不佳。 你可以直接使用 <a href="https://huggingface.co/spaces/Soul-AILab/SoulX-Singer-Midi-Editor" target="_blank" rel="noopener">SoulX-Singer-Midi-Editor</a> 进行编辑) </p>',
     ),
     prompt_wav_label=dict(en="Prompt WAV (reference)", zh="Prompt WAV（参考音色）"),
     generated_audio_label=dict(en="Generated merged audio", zh="合成结果音频"),
