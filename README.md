@@ -129,6 +129,15 @@ How to use the Midi-Editor:
 - [Eiditing Metadata with Midi-Editor](preprocess/README.md#L104-L105)
 
 
+### 🌐 WebUI
+
+You can launch the interactive interface with:
+```
+python webui.py
+```
+
+
+
 ## 🚧 Roadmap
 
 - [ ] 🖥️ Web-based UI for easy and interactive inference  
