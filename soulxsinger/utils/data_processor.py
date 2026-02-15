@@ -42,7 +42,7 @@ class DataProcessor:
         merged_items = []
 
         duration = [float(x) for x in meta["duration"].split()]
-        phoneme = [str(x).replace("<AP>", "<SP>") for i, x in enumerate(meta["phoneme"].split())]
+        phoneme = [str(x).replace("<AP>", "<SP>") for x in meta["phoneme"].split()]
         note_pitch = [int(x) for x in meta["note_pitch"].split()]
         note_type = [int(x) if phoneme[i] != "<SP>" else 1 for i, x in enumerate(meta["note_type"].split())]
 
@@ -52,7 +52,6 @@ class DataProcessor:
             else:
                 merged_items.append([phoneme[i], duration[i], note_pitch[i], note_type[i]])
 
-        single_frame_duration = self.hop_size / self.sample_rate
         meta['phoneme'] =  [x[0] for x in merged_items]
         meta['duration'] = [x[1] for x in merged_items]
         meta['note_pitch'] = [x[2] for x in merged_items]
@@ -150,9 +149,9 @@ class DataProcessor:
             meta["note_type"],
         )
 
-        f0 = torch.tensor([float(x) for x in meta["f0"].split()])
-        min_frame = min(item["mel2note"].shape[1], f0.shape[0])
-        item['f0'] = f0[:min_frame].unsqueeze(0).float().to(self.device)
+        f0 = [float(x) for x in meta.get("f0", "").split()]
+        min_frame = min(item["mel2note"].shape[1], len(f0)) if len(f0) > 0 else item["mel2note"].shape[1]
+        item['f0'] = torch.tensor(f0)[:min_frame].unsqueeze(0).float().to(self.device) if len(f0) > 0 else None
         item["mel2note"] = item["mel2note"][:, :min_frame]
 
         if wav_path is not None:

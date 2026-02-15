@@ -20,15 +20,16 @@ from .f0_extraction import F0Extractor
 from .g2p import g2p_transform
 
 
-# Audio and segmenting constants (used by _edit_data_to_meta)
-SAMPLE_RATE = 44100
-DEFAULT_LANGUAGE = "Mandarin"
-MAX_GAP_SEC = 5.0  # gap (sec) above which we start a new segment
+# Audio, MIDI and segmentation constants
+SAMPLE_RATE = 44100     # Hz, fixed for all audio processing in this script to ensure consistent timing with MIDI ticks.
+MIDI_TICKS_PER_BEAT = 500
+MIDI_TEMPO = 500000     # microseconds per beat (120 BPM)
+MIDI_TIME_SIGNATURE = (4, 4)
+MIDI_VELOCITY = 64
+END_EXTENSION_SEC = 0.4  # extend each segment end by this much silence (sec) to give the model more context
+MAX_GAP_SEC = 2.0  # gap (sec) above which we start a new segment
 MAX_SEGMENT_DUR_SUM_SEC = 60.0  # max cumulative note duration per segment (sec)
-MIN_GAP_THRESHOLD_SEC = 0.001  # ignore gaps smaller than this
-LONG_SILENCE_THRESHOLD_SEC = 0.05  # treat as separate <SP> if gap larger
-MAX_LEADING_SP_DUR_SEC = 2.0  # cap leading silence in a segment to this (sec)
-DEFAULT_RMVPE_MODEL_PATH = "pretrained_models/SoulX-Singer-Preprocess/rmvpe/rmvpe.pt"
+SILENCE_THRESHOLD_SEC = 0.2  # treat as separate <SP> if gap larger
 
 
 @dataclass
@@ -44,42 +45,6 @@ class Note:
     def end_s(self) -> float:
         return self.start_s + self.note_dur
 
-
-
-def remove_duplicate_segments(meta_data: List[dict]) -> None:
-    """Merge consecutive identical notes (same text, pitch, type) within each segment. Mutates meta_data in place."""
-    for idx, segment in enumerate(meta_data):
-        texts = segment["note_text"]
-        durs = segment["note_dur"]
-        pitches = segment["note_pitch"]
-        types = segment["note_type"]
-        new_texts = []
-        new_durs = []
-        new_pitches = []
-        new_types = []
-        for i in range(len(texts)):
-            if i == 0:
-                new_texts.append(texts[i])
-                new_durs.append(durs[i])
-                new_pitches.append(pitches[i])
-                new_types.append(types[i])
-                continue
-            t, d, p, ty = texts[i], durs[i], pitches[i], types[i]
-            if t == "<SP>" and texts[i - 1] == "<SP>":
-                new_durs[-1] += d
-                continue
-            if t == texts[i - 1] and p == pitches[i - 1] and ty == types[i - 1]:
-                new_durs[-1] += d
-            else:
-                new_texts.append(t)
-                new_durs.append(d)
-                new_pitches.append(p)
-                new_types.append(ty)
-        meta_data[idx]["note_text"] = new_texts
-        meta_data[idx]["note_dur"] = new_durs
-        meta_data[idx]["note_pitch"] = new_pitches
-        meta_data[idx]["note_type"] = new_types
-
 def meta2notes(meta_path: str) -> List[Note]:
     """Parse SoulX-Singer metadata JSON into a flat list of Note (absolute start_s)."""
     with open(meta_path, "r", encoding="utf-8") as f:
@@ -92,7 +57,7 @@ def meta2notes(meta_path: str) -> List[Note]:
     notes: List[Note] = []
     for seg in segments:
         offset_s = seg["time"][0] / 1000
-        words = [str(x).replace("<AP>", "<SP>") for i, x in enumerate(seg["text"].split())]
+        words = [str(x).replace("<AP>", "<SP>") for x in seg["text"].split()]
         word_durs = [float(x) for x in seg["duration"].split()]
         pitches = [int(x) for x in seg["note_pitch"].split()]
         types = [int(x) if words[i] != "<SP>" else 1 for i, x in enumerate(seg["note_type"].split())]
@@ -117,9 +82,10 @@ def meta2notes(meta_path: str) -> List[Note]:
 
 def _append_segment_to_meta(
     meta_path_str: str,
-    cut_wavs_output_dir: str,
-    vocal_file: str,
-    audio_data: Any,
+    cut_wavs_output_dir: str | None,
+    vocal_file: str | None,
+    language: str,
+    audio_data: Any | None,
     meta_data: List[dict],
     note_start: List[float],
     note_end: List[float],
@@ -127,28 +93,40 @@ def _append_segment_to_meta(
     note_pitch: List[Any],
     note_type: List[Any],
     note_dur: List[float],
-    end_time_ms_override: float | None = None,
 ) -> None:
     """Write one segment wav and append one segment dict to meta_data. Caller clears note_* lists after."""
+    if not all((note_start, note_end, note_text, note_pitch, note_type, note_dur)):
+        return
+
     base_name = os.path.splitext(os.path.basename(meta_path_str))[0]
     item_name = f"{base_name}_{len(meta_data)}"
-    wav_fn = os.path.join(cut_wavs_output_dir, f"{item_name}.wav")
-    start_ms = int(note_start[0] * 1000)
-    end_ms = (
-        int(end_time_ms_override)
-        if end_time_ms_override is not None
-        else int(note_end[-1] * 1000)
-    )
-    start_sample = int(note_start[0] * SAMPLE_RATE)
-    end_sample = int(note_end[-1] * SAMPLE_RATE)
-    write(wav_fn, audio_data[start_sample:end_sample], SAMPLE_RATE)
+    wav_fn = None
+    if cut_wavs_output_dir and vocal_file and audio_data is not None:
+        wav_fn = os.path.join(cut_wavs_output_dir, f"{item_name}.wav")
+        end_pad = int(END_EXTENSION_SEC * SAMPLE_RATE)
+        start_sample = max(0, int(note_start[0] * SAMPLE_RATE))
+        end_sample = min(len(audio_data), int(note_end[-1] * SAMPLE_RATE) + end_pad)
+
+        end_pad_dur = (end_sample / SAMPLE_RATE - note_end[-1]) if end_sample > int(note_end[-1] * SAMPLE_RATE) else 0.0
+        if end_pad_dur > 0:
+            note_dur = note_dur + [end_pad_dur]
+            note_text = note_text + ["<SP>"]
+            note_pitch = note_pitch + [0]
+            note_type = note_type + [1]
+        start_ms = int(start_sample / SAMPLE_RATE * 1000)
+        end_ms = int(end_sample / SAMPLE_RATE * 1000)
+        write(wav_fn, audio_data[start_sample:end_sample], SAMPLE_RATE)
+    else:
+        start_ms = int(note_start[0] * 1000)
+        end_ms = int(note_end[-1] * 1000)
+
     meta_data.append({
         "item_name": item_name,
         "wav_fn": wav_fn,
         "origin_wav_fn": vocal_file,
         "start_time_ms": start_ms,
         "end_time_ms": end_ms,
-        "language": DEFAULT_LANGUAGE,
+        "language": language,
         "note_text": list(note_text),
         "note_pitch": list(note_pitch),
         "note_type": list(note_type),
@@ -156,22 +134,25 @@ def _append_segment_to_meta(
     })
 
 
-def convert_meta(meta_data: List[dict], rmvpe_model_path, device="cuda"):
-    pitch_extractor = F0Extractor(rmvpe_model_path, device=device, verbose=False)
+def convert_meta(meta_data: List[dict], pitch_extractor: F0Extractor | None) -> List[dict]:
     converted_data = []
 
     for item in meta_data:
+        language = item.get("language", "Mandarin")
         wav_fn = item.get("wav_fn")
-        if not wav_fn or not os.path.isfile(wav_fn):
-            raise FileNotFoundError(f"Segment wav file not found: {wav_fn}")
-        f0 = pitch_extractor.process(wav_fn)
+        if pitch_extractor is not None:
+            if not wav_fn or not os.path.isfile(wav_fn):
+                raise FileNotFoundError(f"Segment wav file not found: {wav_fn}")
+            f0 = pitch_extractor.process(wav_fn)
+        else:
+            f0 = []
         converted_item = {
             "index": item.get("item_name"),
-            "language": item.get("language"),
+            "language": language,
             "time": [item.get("start_time_ms", 0), item.get("end_time_ms", sum(item["note_dur"]) * 1000)],
             "duration": " ".join(str(round(x, 2)) for x in item.get("note_dur", [])),
             "text": " ".join(item.get("note_text", [])),
-            "phoneme": " ".join(g2p_transform(item.get("note_text", []), DEFAULT_LANGUAGE)),
+            "phoneme": " ".join(g2p_transform(item.get("note_text", []), language)),
             "note_pitch": " ".join(str(x) for x in item.get("note_pitch", [])),
             "note_type": " ".join(str(x) for x in item.get("note_type", [])),
             "f0": " ".join(str(round(float(x), 1)) for x in f0),
@@ -184,14 +165,16 @@ def convert_meta(meta_data: List[dict], rmvpe_model_path, device="cuda"):
 def _edit_data_to_meta(
     meta_path_str: str,
     edit_data: List[dict],
-    vocal_file: str,
-    rmvpe_model_path: str | None = None,
-    device: str = "cuda",
+    vocal_file: str | None,
+    language: str,
+    pitch_extractor: F0Extractor | None,
 ) -> None:
     """Write SoulX-Singer metadata JSON from edit_data (list of {start, end, note_text, note_pitch, note_type})."""
-    # Use a fixed temporary directory for cut wavs
-    cut_wavs_output_dir = os.path.join(os.path.dirname(vocal_file), "cut_wavs_tmp")
-    os.makedirs(cut_wavs_output_dir, exist_ok=True)
+    # Store temporary cut wavs beside the source vocal (same folder, fixed subdir name).
+    cut_wavs_output_dir = None
+    if vocal_file:
+        cut_wavs_output_dir = os.path.join(os.path.dirname(vocal_file), "cut_wavs_tmp")
+        os.makedirs(cut_wavs_output_dir, exist_ok=True)
 
     note_text: List[Any] = []
     note_pitch: List[Any] = []
@@ -199,10 +182,35 @@ def _edit_data_to_meta(
     note_dur: List[float] = []
     note_start: List[float] = []
     note_end: List[float] = []
-    prev_end = 0.0
     meta_data: List[dict] = []
-    audio_data, _ = librosa.load(vocal_file, sr=SAMPLE_RATE, mono=True)
+    audio_data = None
+    if vocal_file:
+        audio_data, _ = librosa.load(vocal_file, sr=SAMPLE_RATE, mono=True)
     dur_sum = 0.0
+
+    def flush_current_segment() -> None:
+        nonlocal dur_sum
+        _append_segment_to_meta(
+            meta_path_str,
+            cut_wavs_output_dir,
+            vocal_file,
+            language,
+            audio_data,
+            meta_data,
+            note_start,
+            note_end,
+            note_text,
+            note_pitch,
+            note_type,
+            note_dur,
+        )
+        note_text.clear()
+        note_pitch.clear()
+        note_type.clear()
+        note_dur.clear()
+        note_start.clear()
+        note_end.clear()
+        dur_sum = 0.0
 
     for entry in edit_data:
         start = float(entry["start"])
@@ -218,85 +226,27 @@ def _edit_data_to_meta(
             note_dur.append(end - start)
             note_start.append(start)
             note_end.append(end)
-            prev_end = end
             dur_sum += end - start
             continue
 
         if (
             len(note_text) > 0
             and note_text[-1] == "<SP>"
-            and note_dur[-1] > MAX_LEADING_SP_DUR_SEC
+            and note_dur[-1] > MAX_GAP_SEC
         ):
-            cut_time = note_dur[-1] - MAX_LEADING_SP_DUR_SEC
-            note_dur[-1] = MAX_LEADING_SP_DUR_SEC
-            end_ms_override = note_end[-1] * 1000 - cut_time * 1000
-            _append_segment_to_meta(
-                meta_path_str,
-                cut_wavs_output_dir,
-                vocal_file,
-                audio_data,
-                meta_data,
-                note_start,
-                note_end,
-                note_text,
-                note_pitch,
-                note_type,
-                note_dur,
-                end_time_ms_override=end_ms_override,
-            )
-            note_text = []
-            note_pitch = []
-            note_type = []
-            note_dur = []
-            note_start = []
-            note_end = []
-            prev_end = start
-            dur_sum = 0.0
+            note_text.pop()
+            note_pitch.pop()
+            note_type.pop()
+            note_dur.pop()
+            note_start.pop()
+            note_end.pop()
 
-        gap_from_prev = start - prev_end
-        gap_from_last_note = (start - note_end[-1]) if note_end else 0.0
-        if (
-            gap_from_prev >= MAX_GAP_SEC
-            or gap_from_last_note >= MAX_GAP_SEC
-            or dur_sum >= MAX_SEGMENT_DUR_SUM_SEC
-        ):
-            if len(note_text) > 0:
-                _append_segment_to_meta(
-                    meta_path_str,
-                    cut_wavs_output_dir,
-                    vocal_file,
-                    audio_data,
-                    meta_data,
-                    note_start,
-                    note_end,
-                    note_text,
-                    note_pitch,
-                    note_type,
-                    note_dur,
-                )
-                note_text = []
-                note_pitch = []
-                note_type = []
-                note_dur = []
-                note_start = []
-                note_end = []
-                prev_end = start
-                dur_sum = 0.0
+            dur_sum = sum(note_dur)
+            flush_current_segment()
 
-        if start - prev_end > MIN_GAP_THRESHOLD_SEC:
-            if start - prev_end > LONG_SILENCE_THRESHOLD_SEC or len(note_text) == 0:
-                note_text.append("<SP>")
-                note_pitch.append(0)
-                note_type.append(1)
-                note_dur.append(start - prev_end)
-                note_start.append(prev_end)
-                note_end.append(start)
-            else:
-                if len(note_dur) > 0:
-                    note_dur[-1] += start - prev_end
-                    note_end[-1] = start
+        if dur_sum + (end - start) > MAX_SEGMENT_DUR_SUM_SEC and len(note_text) > 0:
+            flush_current_segment()
 
-        prev_end = end
         note_text.append(text)
         note_pitch.append(int(pitch))
         note_type.append(int(type_))
@@ -305,42 +255,49 @@ def _edit_data_to_meta(
         note_end.append(end)
         dur_sum += end - start
 
-    if len(note_text) > 0:
-        _append_segment_to_meta(
-            meta_path_str,
-            cut_wavs_output_dir,
-            vocal_file,
-            audio_data,
-            meta_data,
-            note_start,
-            note_end,
-            note_text,
-            note_pitch,
-            note_type,
-            note_dur,
-        )
+    if note_text:
+        flush_current_segment()
 
-    remove_duplicate_segments(meta_data)
+    # Merge only consecutive <SP> tokens to reduce fragmentation in silence regions.
+    for segment in meta_data:
+        phoneme = segment['note_text']
+        duration = segment['note_dur']
+        note_pitch = segment['note_pitch']
+        note_type = segment['note_type']
 
-    _rmvpe_path = rmvpe_model_path or DEFAULT_RMVPE_MODEL_PATH
-    converted_data = convert_meta(meta_data, _rmvpe_path, device)
+        merged_items: List[Tuple[str, float, int, int]] = []
+        prev_item = None
+        for text, dur, pitch, note_type in zip(phoneme, duration, note_pitch, note_type):
+            if prev_item and text == "<SP>" and prev_item[0] == "<SP>":
+                merged_items[-1] = (prev_item[0], prev_item[1] + dur, prev_item[2], prev_item[3])
+            else:
+                merged_items.append((text, dur, pitch, note_type))
+            prev_item = merged_items[-1]
+
+        segment['note_text'] = [item[0] for item in merged_items]
+        segment['note_dur'] = [item[1] for item in merged_items]
+        segment['note_pitch'] = [item[2] for item in merged_items]
+        segment['note_type'] = [item[3] for item in merged_items]
+
+    converted_data = convert_meta(meta_data, pitch_extractor)
 
     with open(meta_path_str, "w", encoding="utf-8") as f:
         json.dump(converted_data, f, ensure_ascii=False, indent=2)
 
     # Clean up temporary cut wavs directory
-    try:
-        shutil.rmtree(cut_wavs_output_dir, ignore_errors=True)
-    except Exception:
-        pass
+    if cut_wavs_output_dir:
+        try:
+            shutil.rmtree(cut_wavs_output_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def notes2meta(
     notes: List[Note],
     meta_path: str,
-    vocal_file: str,
-    rmvpe_model_path: str | None = None,
-    device: str = "cuda",
+    vocal_file: str | None,
+    language: str,
+    pitch_extractor: F0Extractor | None,
 ) -> None:
     """Write SoulX-Singer metadata JSON from a list of Note (segmenting + wav cuts)."""
     edit_data = [
@@ -357,30 +314,21 @@ def notes2meta(
         str(meta_path),
         edit_data,
         vocal_file,
-        rmvpe_model_path=rmvpe_model_path,
-        device=device,
+        language,
+        pitch_extractor=pitch_extractor,
     )
 
 
-@dataclass(frozen=True)
-class MidiDefaults:
-    ticks_per_beat: int = 500
-    tempo: int = 500000  # microseconds per beat (120 BPM)
-    time_signature: Tuple[int, int] = (4, 4)
-    velocity: int = 64
-
-
 def _seconds_to_ticks(seconds: float, ticks_per_beat: int, tempo: int) -> int:
+    # ticks = seconds * (ticks_per_beat beats) / (tempo microseconds per beat)
     return int(round(seconds * ticks_per_beat * 1_000_000 / tempo))
 
 
 def notes2midi(
     notes: List[Note],
     midi_path: str,
-    defaults: MidiDefaults | None = None,
 ) -> None:
     """Write MIDI file from a list of Note."""
-    defaults = defaults or MidiDefaults()
     if not notes:
         raise ValueError("Empty note list.")
 
@@ -392,15 +340,16 @@ def notes2midi(
             continue
 
         start_ticks = _seconds_to_ticks(
-            start_s, defaults.ticks_per_beat, defaults.tempo
+            start_s, MIDI_TICKS_PER_BEAT, MIDI_TEMPO
         )
         end_ticks = _seconds_to_ticks(
-            end_s, defaults.ticks_per_beat, defaults.tempo
+            end_s, MIDI_TICKS_PER_BEAT, MIDI_TEMPO
         )
         if end_ticks <= start_ticks:
             end_ticks = start_ticks + 1
 
         lyric = n.note_text
+        # Some DAWs store lyric text as latin1-compatible bytes; keep best-effort round-trip.
         try:
             lyric = lyric.encode("utf-8").decode("latin1")
         except (UnicodeEncodeError, UnicodeDecodeError):
@@ -418,7 +367,7 @@ def notes2midi(
                 mido.Message(
                     "note_on",
                     note=n.note_pitch,
-                    velocity=defaults.velocity,
+                    velocity=MIDI_VELOCITY,
                     time=0,
                 ),
             )
@@ -431,18 +380,19 @@ def notes2midi(
             )
         )
 
+    # Keep deterministic ordering at same tick: note_off -> lyric -> note_on.
     events.sort(key=lambda x: (x[0], x[1]))
 
-    mid = mido.MidiFile(ticks_per_beat=defaults.ticks_per_beat)
+    mid = mido.MidiFile(ticks_per_beat=MIDI_TICKS_PER_BEAT)
     track = mido.MidiTrack()
     mid.tracks.append(track)
 
-    track.append(mido.MetaMessage("set_tempo", tempo=defaults.tempo, time=0))
+    track.append(mido.MetaMessage("set_tempo", tempo=MIDI_TEMPO, time=0))
     track.append(
         mido.MetaMessage(
             "time_signature",
-            numerator=defaults.time_signature[0],
-            denominator=defaults.time_signature[1],
+            numerator=MIDI_TIME_SIGNATURE[0],
+            denominator=MIDI_TIME_SIGNATURE[1],
             time=0,
         )
     )
@@ -458,7 +408,10 @@ def notes2midi(
 
 
 def midi2notes(midi_path: str) -> List[Note]:
-    """Parse MIDI file into a list of Note. Merges all tracks; tempo from last set_tempo event."""
+    """Parse MIDI file into a list of Note.
+
+    Merges all tracks and uses the latest encountered set_tempo as global tempo.
+    """
     mid = mido.MidiFile(midi_path)
     ticks_per_beat = mid.ticks_per_beat
     tempo = 500000
@@ -520,6 +473,7 @@ def midi2notes(midi_path: str) -> List[Note]:
     lyrics.sort(key=lambda x: x[0])
 
     trimmed = []
+    # Remove/trim overlaps so generated notes are strictly non-overlapping in tick domain.
     for note in raw_notes:
         while trimmed:
             prev = trimmed[-1]
@@ -534,6 +488,7 @@ def midi2notes(midi_path: str) -> List[Note]:
     raw_notes = trimmed
 
     tolerance = ticks_per_beat // 100
+    # Attach lyrics near note_on positions with a small tick tolerance.
     lyric_idx = 0
     for note in raw_notes:
         while lyric_idx < len(lyrics) and lyrics[lyric_idx][0] < note["start_ticks"] - tolerance:
@@ -559,6 +514,7 @@ def midi2notes(midi_path: str) -> List[Note]:
             continue
 
         lyric = n.get("lyric", "")
+        # SoulX-Singer convention mapping from lyric token to note_type/text.
         if not lyric:
             tp = 2
             text = "啦"
@@ -571,6 +527,21 @@ def midi2notes(midi_path: str) -> List[Note]:
         else:
             tp = 2
             text = lyric
+
+        if start_s - prev_end_s > SILENCE_THRESHOLD_SEC:
+            # Explicitly represent long gaps as <SP> notes.
+            result.append(
+                Note(
+                    start_s=prev_end_s,
+                    note_dur=start_s - prev_end_s,
+                    note_text="<SP>",
+                    note_pitch=0,
+                    note_type=1,
+                )
+            )
+        else:
+            if len(result) > 0:
+                result[-1].note_dur = start_s - result[-1].start_s
 
         result.append(
             Note(
@@ -586,35 +557,51 @@ def midi2notes(midi_path: str) -> List[Note]:
     return result
 
 
-def meta2midi(meta_path: str, midi_path: str, defaults: MidiDefaults | None = None) -> None:
-    """Convert SoulX-Singer metadata JSON to MIDI file (meta -> List[Note] -> midi)."""
-    notes = meta2notes(meta_path)
-    notes2midi(notes, midi_path, defaults)
-    print(f"Saved MIDI to {midi_path}")
+class MidiParser:
+    def __init__(
+        self,
+        rmvpe_model_path: str,
+        device: str = "cuda",
+    ) -> None:
+        self.rmvpe_model_path = rmvpe_model_path
+        self.device = device
+        self.pitch_extractor: F0Extractor | None = None
 
+    def _get_pitch_extractor(self) -> F0Extractor:
+        if self.pitch_extractor is None:
+            self.pitch_extractor = F0Extractor(
+                self.rmvpe_model_path,
+                device=self.device,
+                verbose=False,
+            )
+        return self.pitch_extractor
 
-def midi2meta(
-    midi_path: str,
-    meta_path: str,
-    vocal_file: str,
-    rmvpe_model_path: str | None = None,
-    device: str = "cuda",
-) -> None:
-    """Convert MIDI file to SoulX-Singer metadata JSON (midi -> List[Note] -> meta)."""
-    meta_dir = os.path.dirname(meta_path)
-    if meta_dir:
-        os.makedirs(meta_dir, exist_ok=True)
-    # cut_wavs will be written to a fixed temporary directory inside _edit_data_to_meta
-    notes = midi2notes(midi_path)
-    notes2meta(
-        notes,
-        meta_path,
-        vocal_file,
-        rmvpe_model_path=rmvpe_model_path,
-        device=device,
-    )
-    print(f"Saved Meta to {meta_path}")
+    def midi2meta(
+        self,
+        midi_path: str,
+        meta_path: str,
+        vocal_file: str | None = None,
+        language: str = "Mandarin",
+    ) -> None:
+        meta_dir = os.path.dirname(meta_path)
+        if meta_dir:
+            os.makedirs(meta_dir, exist_ok=True)
 
+        notes = midi2notes(midi_path)
+        pitch_extractor = self._get_pitch_extractor() if vocal_file else None
+        notes2meta(
+            notes,
+            meta_path,
+            vocal_file,
+            language,
+            pitch_extractor=pitch_extractor,
+        )
+        print(f"Saved Meta to {meta_path}")
+
+    def meta2midi(self, meta_path: str, midi_path: str) -> None:
+        notes = meta2notes(meta_path)
+        notes2midi(notes, midi_path)
+        print(f"Saved MIDI to {midi_path}")
 
 if __name__ == "__main__":
     import argparse
@@ -624,7 +611,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--meta", type=str, help="Path to metadata JSON")
     parser.add_argument("--midi", type=str, help="Path to MIDI file")
-    parser.add_argument("--vocal", type=str, help="Path to vocal wav (for midi2meta)")
+    parser.add_argument("--vocal", type=str, default=None, help="Path to vocal wav (optional for midi2meta)")
+    parser.add_argument("--language", type=str, default="Mandarin", help="Lyric language for metadata phoneme conversion (default: Mandarin)")
     parser.add_argument(
         "--meta2midi",
         action="store_true",
@@ -633,7 +621,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--midi2meta",
         action="store_true",
-        help="Convert midi -> meta (requires --midi, --meta, --vocal, --cut_wavs_dir)",
+        help="Convert midi -> meta (requires --midi and --meta; --vocal is optional)",
     )
     parser.add_argument(
         "--rmvpe_model_path",
@@ -648,22 +636,20 @@ if __name__ == "__main__":
         default="cuda",
     )
     args = parser.parse_args()
+    midi_parser = MidiParser(
+        rmvpe_model_path=args.rmvpe_model_path,
+        device=args.device,
+    )
 
     if args.meta2midi:
         if not args.meta or not args.midi:
             parser.error("--meta2midi requires --meta and --midi")
-        meta2midi(args.meta, args.midi)
+        midi_parser.meta2midi(args.meta, args.midi)
     elif args.midi2meta:
-        if not args.midi or not args.meta or not args.vocal:
+        if not args.midi or not args.meta:
             parser.error(
-                "--midi2meta requires --midi, --meta, --vocal"
+                "--midi2meta requires --midi and --meta"
             )
-        midi2meta(
-            args.midi,
-            args.meta,
-            args.vocal,
-            rmvpe_model_path=args.rmvpe_model_path,
-            device=args.device,
-        )
+        midi_parser.midi2meta(args.midi, args.meta, args.vocal, args.language)
     else:
         parser.print_help()
