@@ -409,7 +409,6 @@ def render_interface() -> gr.Blocks:
 			_GLOBAL_LANG = ["zh", "en"][lang]
 			return [
 				gr.update(label=_i18n("display_lang_label")),
-				gr.update(value=_i18n("title")),
 				gr.update(value=_usage_md()),
 				gr.update(label=_i18n("prompt_audio_label")),
 				gr.update(label=_i18n("target_audio_label")),
