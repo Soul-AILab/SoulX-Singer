@@ -13,13 +13,13 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 class AutoPromptExtractor:
-    def __init__(self, target_length_sec: float = 15.0, crossfade_ms: int = 50, min_segment_sec: float = 3.0):
+    def __init__(self, target_length_sec: float = 15.0, crossfade_ms: int = 50, min_segment_sec: float = 3.5):
         """
         Initialize the AutoPromptExtractor.
         Args:
             target_length_sec: Target maximum length of the combined prompt in seconds.
             crossfade_ms: Duration of crossfade in milliseconds to prevent popping noise.
-            min_segment_sec: Minimum duration of a single segment in seconds to preserve prosody.
+            min_segment_sec: Minimum duration of a single segment in seconds to preserve prosody. (Increased to 3.5s based on profiling)
         """
         self.target_length_sec = target_length_sec
         self.crossfade_ms = crossfade_ms
@@ -148,9 +148,11 @@ class AutoPromptExtractor:
             if len(voiced_f0) > 0:
                 seg_f0_median = torch.median(voiced_f0)
                 seg_f0_var = torch.var(voiced_f0) if len(voiced_f0) > 1 else torch.tensor(0.0)
+                seg_f0_range = torch.max(voiced_f0) - torch.min(voiced_f0)
                 f0_distance = abs(seg_f0_median.item() - global_f0_median.item())
             else:
                 seg_f0_var = torch.tensor(0.0)
+                seg_f0_range = torch.tensor(0.0)
                 f0_distance = 9999.0
                 
             seg_wav = wav_tensor[..., seg["start"]:seg["end"]]
@@ -167,6 +169,7 @@ class AutoPromptExtractor:
             seg_copy.update({
                 "voiced_ratio": voiced_ratio,
                 "f0_var": seg_f0_var.item() if isinstance(seg_f0_var, torch.Tensor) else seg_f0_var,
+                "f0_range": seg_f0_range.item() if isinstance(seg_f0_range, torch.Tensor) else seg_f0_range,
                 "rms_var": rms_var,
                 "f0_distance": f0_distance
             })
@@ -184,13 +187,21 @@ class AutoPromptExtractor:
                     s[f"{key}_norm"] = 0.5
                     
         normalize("f0_var")
+        normalize("f0_range")
         normalize("rms_var")
-        normalize("voiced_ratio")
         
         for s in scored_segments:
-            # Weighted sum: prefer high dynamic variance and high voice density
-            s["score"] = s.get("f0_var_norm", 0) * 0.4 + s.get("rms_var_norm", 0) * 0.4 + s.get("voiced_ratio_norm", 0) * 0.2
-            logger.debug(f"[_calculate_segment_scores] Seg {s['start']}~{s['end']}: voiced_ratio={s.get('voiced_ratio',0):.2f}, rms_var={s.get('rms_var',0):.2f}, f0_diff={s.get('f0_distance',0):.2f} -> Score={s['score']:.4f}")
+            # Voice ratio hard filter instead of linear scaling: Penalize segments with low voice ratio
+            voice_penalty = 1.0 if s.get("voiced_ratio", 0) >= 0.6 else 0.1
+            
+            # Based on profiling, SVC models perform much better with STABLE F0 (lower variance and lower range)
+            stability_score = (1.0 - s.get("f0_var_norm", 0)) * 0.5 + (1.0 - s.get("f0_range_norm", 0)) * 0.3
+            
+            # We still keep a small weight for energy variance to prevent picking complete monotone/flat segments
+            energy_score = s.get("rms_var_norm", 0) * 0.2
+            
+            s["score"] = (stability_score + energy_score) * voice_penalty
+            logger.debug(f"[_calculate_segment_scores] Seg {s['start']}~{s['end']}: voiced_ratio={s.get('voiced_ratio',0):.2f}, f0_var={s.get('f0_var',0):.2f}, f0_diff={s.get('f0_distance',0):.2f} -> Score={s['score']:.4f}")
             
         return scored_segments, global_f0_median.item()
 
