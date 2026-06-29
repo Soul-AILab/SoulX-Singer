@@ -10,11 +10,13 @@ import gradio as gr
 import librosa
 import numpy as np
 import soundfile as sf
+import torchaudio
 import torch
 
 from preprocess.pipeline import PreprocessPipeline
 from soulxsinger.utils.file_utils import load_config
 from cli.inference_svc import build_model as build_svc_model, process as svc_process
+from soulxsinger.utils.auto_prompt import AutoPromptExtractor
 
 
 ROOT = Path(__file__).parent
@@ -54,6 +56,9 @@ _I18N = dict(
 	examples_label=dict(en="Reference example (click to load)", zh="参考样例（点击加载）"),
 	run_btn=dict(en="🎤Singing Voice Conversion", zh="🎤歌声转换"),
 	output_audio_label=dict(en="Generated audio", zh="合成结果音频"),
+	auto_prompt_label=dict(en="Smart Auto-Prompt (Extract & Combine)", zh="智能提取组合Prompt (Auto-Prompt)"),
+	auto_prompt_length_label=dict(en="Auto-Prompt Max Length (s)", zh="自动提取最大长度 (秒)"),
+	used_prompt_audio_label=dict(en="Actual Used Prompt", zh="实际使用的Prompt音频"),
 	warn_missing_audio=dict(en="Please provide both prompt audio and target audio.", zh="请同时上传 Prompt 与 Target 音频。"),
 	instruction_title=dict(en="Usage", zh="使用说明"),
 	instruction_p1=dict(
@@ -256,19 +261,20 @@ class AppState:
 APP_STATE = AppState(use_fp16="--fp16" in sys.argv)
 
 
-def _start_svc(prompt_audio, target_audio, prompt_vocal_sep, target_vocal_sep, auto_shift, auto_mix_acc, pitch_shift, n_step, cfg, seed):
+def _start_svc(prompt_audio, target_audio, prompt_vocal_sep, target_vocal_sep, auto_shift, auto_mix_acc, pitch_shift, n_step, cfg, seed, use_auto_prompt, auto_prompt_length):
 	try:
 		prompt_audio = _normalize_audio_input(prompt_audio)
 		target_audio = _normalize_audio_input(target_audio)
 		if not prompt_audio or not target_audio:
 			gr.Warning(_i18n("warn_missing_audio"))
-			return None
+			return None, None
 
 		session_base = _session_dir()
 		audio_dir = session_base / "audio"
 		prompt_raw = audio_dir / "prompt.wav"
 		target_raw = audio_dir / "target.wav"
-		_trim_and_save_audio(prompt_audio, prompt_raw, PROMPT_MAX_SEC_DEFAULT)
+		prompt_max_sec = 3600 if use_auto_prompt else PROMPT_MAX_SEC_DEFAULT
+		_trim_and_save_audio(prompt_audio, prompt_raw, prompt_max_sec)
 		_trim_and_save_audio(target_audio, target_raw, TARGET_MAX_SEC_DEFAULT)
 
 		prompt_ok, prompt_msg, prompt_wav, prompt_f0 = APP_STATE.run_preprocess(
@@ -278,7 +284,29 @@ def _start_svc(prompt_audio, target_audio, prompt_vocal_sep, target_vocal_sep, a
 		)
 		if not prompt_ok or prompt_wav is None or prompt_f0 is None:
 			print(prompt_msg, file=sys.stderr, flush=True)
-			return None
+			return None, None
+
+		if use_auto_prompt:
+			try:
+				print("Extracting optimal prompt...", file=sys.stderr, flush=True)
+				extractor = AutoPromptExtractor(target_length_sec=float(auto_prompt_length))
+				pt_wav_tensor, sr = torchaudio.load(str(prompt_wav))
+				pt_f0_tensor = torch.from_numpy(np.load(str(prompt_f0)))
+				if pt_f0_tensor.dim() == 1:
+					pt_f0_tensor = pt_f0_tensor.unsqueeze(0)
+				
+				pt_wav_ext, pt_f0_ext = extractor.extract(pt_wav_tensor, pt_f0_tensor, sr)
+				
+				temp_prompt_wav = session_base / "transcriptions" / "prompt" / "auto_prompt.wav"
+				temp_prompt_f0 = session_base / "transcriptions" / "prompt" / "auto_prompt_f0.npy"
+				torchaudio.save(str(temp_prompt_wav), pt_wav_ext, sr)
+				np.save(str(temp_prompt_f0), pt_f0_ext.squeeze(0).numpy())
+				
+				prompt_wav = temp_prompt_wav
+				prompt_f0 = temp_prompt_f0
+				print(f"Optimal prompt extracted.", file=sys.stderr, flush=True)
+			except Exception as e:
+				print(f"Auto prompt failed: {e}", file=sys.stderr, flush=True)
 
 		target_ok, target_msg, target_wav, target_f0 = APP_STATE.run_preprocess(
 			audio_path=target_raw,
@@ -287,7 +315,7 @@ def _start_svc(prompt_audio, target_audio, prompt_vocal_sep, target_vocal_sep, a
 		)
 		if not target_ok or target_wav is None or target_f0 is None:
 			print(target_msg, file=sys.stderr, flush=True)
-			return None
+			return None, None
 
 		ok, msg, generated = APP_STATE.run_svc(
 			prompt_wav_path=prompt_wav,
@@ -304,11 +332,11 @@ def _start_svc(prompt_audio, target_audio, prompt_vocal_sep, target_vocal_sep, a
 		)
 		if not ok or generated is None:
 			print(msg, file=sys.stderr, flush=True)
-			return None
-		return str(generated)
+			return None, None
+		return str(generated), str(prompt_wav)
 	except Exception:
 		_print_exception("_start_svc")
-		return None
+		return None, None
 
 
 def render_interface() -> gr.Blocks:
@@ -373,11 +401,20 @@ def render_interface() -> gr.Blocks:
 			cfg = gr.Slider(label=_i18n("cfg_label"), value=1.0, minimum=0.0, maximum=10.0, step=0.1, scale=1)
 			seed_input = gr.Slider(label=_i18n("seed_label"), value=42, minimum=0, maximum=10000, step=1, scale=1)
 
+		with gr.Row(equal_height=True):
+			use_auto_prompt = gr.Checkbox(label=_i18n("auto_prompt_label"), value=False, scale=1)
+			auto_prompt_length = gr.Slider(label=_i18n("auto_prompt_length_label"), value=15.0, minimum=5.0, maximum=30.0, step=1.0, scale=1, interactive=False)
+			
+			def toggle_length_slider(is_checked):
+				return gr.update(interactive=is_checked)
+			use_auto_prompt.change(fn=toggle_length_slider, inputs=[use_auto_prompt], outputs=[auto_prompt_length])
+
 		with gr.Row():
 			run_btn = gr.Button(value=_i18n("run_btn"), variant="primary", size="lg")
 
 		with gr.Row():
 			output_audio = gr.Audio(label=_i18n("output_audio_label"), type="filepath", interactive=False)
+			used_prompt_audio = gr.Audio(label=_i18n("used_prompt_audio_label"), type="filepath", interactive=False)
 
 		gr.Examples(
 			examples=EXAMPLE_LIST,
@@ -400,8 +437,10 @@ def render_interface() -> gr.Blocks:
 				n_step,
 				cfg,
 				seed_input,
+				use_auto_prompt,
+				auto_prompt_length,
 			],
-			outputs=[output_audio],
+			outputs=[output_audio, used_prompt_audio],
 		)
 
 		def _change_language(lang):
@@ -420,8 +459,11 @@ def render_interface() -> gr.Blocks:
 				gr.update(label=_i18n("n_step_label")),
 				gr.update(label=_i18n("cfg_label")),
 				gr.update(label=_i18n("seed_label")),
+				gr.update(label=_i18n("auto_prompt_label")),
+				gr.update(label=_i18n("auto_prompt_length_label")),
 				gr.update(value=_i18n("run_btn")),
 				gr.update(label=_i18n("output_audio_label")),
+				gr.update(label=_i18n("used_prompt_audio_label")),
 				gr.update(value=_tips_md()),
 			]
 
@@ -441,8 +483,11 @@ def render_interface() -> gr.Blocks:
 				n_step,
 				cfg,
 				seed_input,
+				use_auto_prompt,
+				auto_prompt_length,
 				run_btn,
 				output_audio,
+				used_prompt_audio,
 				tips_md,
 			],
 		)

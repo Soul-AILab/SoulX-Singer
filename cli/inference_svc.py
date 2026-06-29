@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from soulxsinger.utils.file_utils import load_config
 from soulxsinger.models.soulxsinger_svc import SoulXSingerSVC
 from soulxsinger.utils.audio_utils import load_wav
+from soulxsinger.utils.auto_prompt import AutoPromptExtractor
 
 
 def build_model(
@@ -70,6 +71,21 @@ def process(args, config, model: torch.nn.Module):
     pt_f0 = torch.from_numpy(np.load(args.prompt_f0_path)).unsqueeze(0).to(args.device)
     gt_f0 = torch.from_numpy(np.load(args.target_f0_path)).unsqueeze(0).to(args.device)
 
+    if getattr(args, "auto_prompt", False):
+        print(f"Extracting optimal prompt (max length: {args.auto_prompt_length}s)...")
+        extractor = AutoPromptExtractor(target_length_sec=args.auto_prompt_length)
+        # Move back to CPU for extraction to avoid memory issues during processing, then back to device
+        pt_wav_cpu, pt_f0_cpu = extractor.extract(pt_wav.cpu(), pt_f0.cpu(), config.audio.sample_rate)
+        pt_wav = pt_wav_cpu.to(args.device)
+        pt_f0 = pt_f0_cpu.to(args.device)
+        print(f"Optimal prompt extracted. Final length: {pt_wav.shape[-1] / config.audio.sample_rate:.2f}s")
+        
+        # Save the combined prompt for user inspection
+        import torchaudio
+        combined_wav_path = os.path.join(args.save_dir, "combined_prompt.wav")
+        torchaudio.save(combined_wav_path, pt_wav.cpu(), config.audio.sample_rate)
+        print(f"Saved optimal prompt to {combined_wav_path}")
+
     n_step = args.n_steps if hasattr(args, "n_steps") else config.infer.n_steps
     cfg = args.cfg if hasattr(args, "cfg") else config.infer.cfg
 
@@ -123,6 +139,8 @@ if __name__ == "__main__":
         default=False,
         help="Use FP16 inference (faster on GPU)",
     )
+    parser.add_argument("--auto_prompt", action="store_true", help="Enable automatic optimal prompt extraction.")
+    parser.add_argument("--auto_prompt_length", type=float, default=15.0, help="Maximum length of the auto-extracted prompt in seconds.")
     args = parser.parse_args()
     args.use_fp16 = args.fp16
 
