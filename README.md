@@ -42,6 +42,11 @@
 - **🌍 Language-Agnostic Conversion** – Works across multilingual singing content.
 - **🔄 Transcription-Free Audio-to-Audio Conversion** – Convert target singing directly without lyrics transcription or MIDI inputs.
 
+#### Smart Auto Prompt V2 (Local Customization)
+- **📊 Data-Driven Prompt Extraction** – Significantly improved the automatic prompt extraction algorithm by profiling performance metrics.
+- **🎯 F0 Stability Scoring** – Re-engineered the scoring logic to prioritize stable pitch segments (penalizing high F0 variance and range), which dramatically reduces F0 Frame Errors (FFE) and Word Error Rates (WER).
+- **⏱️ Optimized Segment Selection** – Introduced a hard threshold for voiced ratio (>60%) and increased the minimum segment length to 3.5 seconds to preserve better breathing and natural prosody for robust voice cloning.
+
 ---
 
 <p align="center">
