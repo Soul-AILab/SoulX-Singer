@@ -82,6 +82,18 @@
 
 ---
 
+## 💻 Hardware Requirements
+
+No VRAM/hardware requirements were previously documented here. Measured on an actual **NVIDIA Tesla T4 (16GB, sm_75)**:
+
+- **Checkpoint download size**: `model.pt` (SVS) 2.82GB + `model-svc.pt` (SVC) 2.79GB = **5.61GB** total (the separate `SoulX-Singer-Preprocess` bundle used for building your own metadata is an additional 6.92GB).
+- **Peak inference VRAM**: **1.6–2.7GB** for the SVS demo (`example/infer.sh`, fp16, `n_steps=32`), well within a 16GB T4 (6–10x headroom).
+- **Real-time factor (RTF)**: ≈**0.66** wall-clock/audio-duration for the shipped SVS demo (51.24s of audio synthesized in 33.77s) — i.e. inference runs faster than real time on a T4.
+
+In short: both SVS and SVC checkpoints, and inference itself, are comfortably T4-friendly and do not require a higher-end GPU.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Clone Repository
@@ -141,6 +153,8 @@ bash example/infer.sh
 
 This script relies on metadata generated from the preprocessing pipeline, including vocal separation and transcription. Users should follow the steps in [preprocess](preprocess/README.md) to prepare the necessary metadata before running the demo with their own data.
 
+> **Note on custom lyrics:** `cli.inference` does **not** accept raw lyrics or free text directly (there is no `--lyrics`/`--text` flag; passing one exits immediately with an `unrecognized arguments` argparse error). It only accepts pre-built, frame-aligned metadata via `--prompt_metadata_path`/`--target_metadata_path`. To synthesize your own lyrics, you must first run the [preprocess](preprocess/README.md) pipeline (vocal separation + ASR + MIDI transcription, requiring the separate ~6.92GB `SoulX-Singer-Preprocess` checkpoint bundle) to generate that metadata JSON — there is currently no lighter-weight path from plain lyrics to audio.
+
 **⚠️ Important Note**
 The metadata produced by the automatic preprocessing pipeline may not perfectly align the singing audio with the corresponding lyrics and musical notes. For best synthesis quality, we strongly recommend manually correcting the alignment using the 🎼 [Midi-Editor](https://huggingface.co/spaces/Soul-AILab/SoulX-Singer-Midi-Editor). 
 
@@ -170,6 +184,19 @@ For SVC WebUI (audio-to-audio conversion):
 ```
 python webui_svc.py
 ```
+
+---
+
+### ⚡ Known Performance Note: Attention Backend
+
+Measured on a Tesla T4: `DiffLlama`'s top-level `config._attn_implementation` reports `"sdpa"`, but at runtime all 22 transformer layers actually instantiate eager `LlamaAttention` modules (verified via `self_attn.__class__.__name__` across all layers) rather than `LlamaSdpaAttention`. This happens because each layer is built from its own per-layer `LlamaConfig(...)` (see `soulxsinger/models/modules/llama.py`), which never passes through `PreTrainedModel._autoset_attn_implementation()`, so it silently falls back to the class default of `"eager"` regardless of what the top-level config reports.
+
+Forcing the same weights through the real SDPA kernel (no architecture/weight changes, just swapping `self_attn.__class__` to `LlamaSdpaAttention`) measured on a T4:
+- **2.31x faster** inference (34.33s → 14.87s average, 2 runs each, `example/infer.sh` conditions)
+- **~40% lower peak VRAM** (2.71GB → 1.63GB)
+- No measurable output-quality regression (output magnitude stayed within normal run-to-run variance)
+
+This looks like an unintentional config/reality mismatch rather than an intentional eager-only design choice, so it may be worth fixing in the attention dispatch code (tracked separately as a potential issue/PR, not addressed here since this is docs-only).
 
 
 
